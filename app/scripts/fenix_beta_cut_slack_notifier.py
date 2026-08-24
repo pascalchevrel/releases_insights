@@ -2,7 +2,7 @@
 """
 Announces the Fenix beta cut in #mobile-android-team on desktop merge day.
 
-Run daily by .github/workflows/fenix-beta-cut-slack.yml. It reads the current
+Run each weekday by .github/workflows/fenix-beta-cut-slack.yml. It reads the current
 Nightly's schedule and posts only when today is that version's merge day, so it is
 safe to run every day of the year.
 

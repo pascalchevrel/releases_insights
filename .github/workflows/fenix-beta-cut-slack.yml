@@ -2,14 +2,14 @@ name: Fenix beta cut Slack announcement
 
 on:
   schedule:
-    # Runs once a day at 12:00 UTC, which is 8am Eastern for the eight months
+    # Runs on weekdays at 12:00 UTC, which is 8am Eastern for the eight months
     # of the year Eastern is on daylight saving, and 7am for the rest: cron has
     # no time zone, so one of the two has to drift.
     #
     # Ahead of the 16:00 UTC merge on purpose: the version bump lands during
     # merge day, and after that the API's "nightly" is the next major, not the
     # one merging today.
-    - cron: '0 12 * * *'
+    - cron: '0 12 * * 1-5'
   workflow_dispatch:
     inputs:
       dry_run:

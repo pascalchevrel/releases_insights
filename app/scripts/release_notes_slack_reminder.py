@@ -2,7 +2,7 @@
 """
 Checks the Firefox beta release schedule and posts Slack reminders on milestone days.
 
-Run daily by .github/workflows/release-notes-slack.yml. No-ops on days that
+Run each weekday by .github/workflows/release-notes-slack.yml. No-ops on days that
 don't match a milestone, so it's safe to run every day of the year.
 
 Requires the SLACK_WEBHOOK_URL environment variable (set from the

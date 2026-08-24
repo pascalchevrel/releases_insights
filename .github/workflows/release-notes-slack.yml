@@ -2,9 +2,9 @@ name: Release notes Slack reminders
 
 on:
   schedule:
-    # Runs once a day at 14:00 UTC (7am Pacific / 10am Eastern / 3pm BST)
+    # Runs on weekdays at 14:00 UTC (7am Pacific / 10am Eastern / 3pm BST)
     # Adjust time zone as needed for the team
-    - cron: '0 14 * * *'
+    - cron: '0 14 * * 1-5'
   workflow_dispatch:
     inputs:
       dry_run:
