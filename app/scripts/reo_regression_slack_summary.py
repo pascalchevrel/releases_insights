@@ -25,8 +25,9 @@ no flag   The cycle summary, runs twice a week by
           .github/workflows/reo-regression-daily-slack.yml. The same
           regressions with the new/carry over split dropped and the three
           channels merged into one deduplicated list, reporting only the bugs
-          stuck long enough to need a nudge: high severity with nobody on them,
-          no severity decision, or an unanswered needinfo. It ends with
+          stuck long enough to need a nudge: high severity with nobody on them
+          (UNASSIGNED_EXEMPT_PRODUCTS exempt), no severity decision, or an unanswered
+          needinfo. It ends with
           bugdash's Burndown list per version, Beta and Release only, cut down
           to the fixes nobody has asked to uplift. Each line is broken down by
           owning team.
@@ -94,6 +95,15 @@ MISSING_SEVERITIES = ("--",)
 # taken it on. Components with a real default assignee are left out of this, so
 # a bug parked on a triage owner counts as assigned.
 NOBODY = "nobody@mozilla.org"
+
+# Products where an unassigned high severity bug is not something to nag about,
+# so they are left out of the "S2+ unassigned" bucket alone. Web Compatibility
+# bugs S2 definition does not follow the regression severity definition
+#
+# Matched on the product name exactly as Bugzilla reports it, and only against
+# this one bucket: a Web Compatibility bug with no severity or an unanswered
+# needinfo is still stuck in the way those buckets mean.
+UNASSIGNED_EXEMPT_PRODUCTS = ("Web Compatibility",)
 
 # How long a bug has to have been stuck before the daily message nags about it.
 # Long enough that a bug filed or touched during yesterday's working day is left
@@ -554,9 +564,15 @@ def stuck_since() -> datetime.datetime:
 
 
 def needs_assignee(bug: dict, cutoff: datetime.datetime) -> bool:
-    """A high severity bug nobody has taken on, aged from when it was filed."""
+    """
+    A high severity bug nobody has taken on, aged from when it was filed.
+
+    Bugs in UNASSIGNED_EXEMPT_PRODUCTS are left out: an unassigned bug there is
+    not a bug that has been overlooked.
+    """
     return (
         bug["severity"] in HIGH_SEVERITIES
+        and bug["product"] not in UNASSIGNED_EXEMPT_PRODUCTS
         and bug["assigned_to"] == NOBODY
         and parse_timestamp(bug["creation_time"]) < cutoff
     )
