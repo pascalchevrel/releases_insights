@@ -26,7 +26,7 @@ no flag   The cycle summary, runs twice a week by
           regressions with the new/carry over split dropped and the three
           channels merged into one deduplicated list, reporting only the bugs
           stuck long enough to need a nudge: high severity with nobody on them
-          (UNASSIGNED_EXEMPT_PRODUCTS exempt), no severity decision, or an unanswered
+          (UNASSIGNED_EXEMPT_* exempt), no severity decision, or an unanswered
           needinfo. It ends with
           bugdash's Burndown list per version, Beta and Release only, cut down
           to the fixes nobody has asked to uplift. Each line is broken down by
@@ -97,13 +97,20 @@ MISSING_SEVERITIES = ("--",)
 NOBODY = "nobody@mozilla.org"
 
 # Products where an unassigned high severity bug is not something to nag about,
-# so they are left out of the "S2+ unassigned" bucket alone. Web Compatibility
-# bugs S2 definition does not follow the regression severity definition
+# so they are left out of the "S2+ unassigned" bucket alone. Empty today, as the
+# one exemption we have belongs to a component rather than to a whole product;
+# kept so exempting a product later is a one line change.
+UNASSIGNED_EXEMPT_PRODUCTS: tuple[str, ...] = ()
+
+# The same, per component: Web Compatibility::Site Reports bugs S2 definition
+# does not follow the regression severity definition. The exemption is the
+# component's, not the product's — Site Reports only happens to sit under Web
+# Compatibility, and the rest of that product still follows the definition.
 #
-# Matched on the product name exactly as Bugzilla reports it, and only against
-# this one bucket: a Web Compatibility bug with no severity or an unanswered
+# Matched on the component name alone, exactly as Bugzilla reports it, and only
+# against this one bucket: an exempt bug with no severity or an unanswered
 # needinfo is still stuck in the way those buckets mean.
-UNASSIGNED_EXEMPT_PRODUCTS = ("Web Compatibility",)
+UNASSIGNED_EXEMPT_COMPONENTS = ("Site Reports",)
 
 # How long a bug has to have been stuck before the daily message nags about it.
 # Long enough that a bug filed or touched during yesterday's working day is left
@@ -563,16 +570,29 @@ def stuck_since() -> datetime.datetime:
     return now - datetime.timedelta(hours=STUCK_HOURS)
 
 
+def unassigned_exempt(bug: dict) -> bool:
+    """
+    Whether a bug is exempt from the S2+ unassigned bucket.
+
+    Exempt by product or by component, so either can be exempted on its own
+    without the other having to be named.
+    """
+    return (
+        bug["product"] in UNASSIGNED_EXEMPT_PRODUCTS
+        or bug["component"] in UNASSIGNED_EXEMPT_COMPONENTS
+    )
+
+
 def needs_assignee(bug: dict, cutoff: datetime.datetime) -> bool:
     """
     A high severity bug nobody has taken on, aged from when it was filed.
 
-    Bugs in UNASSIGNED_EXEMPT_PRODUCTS are left out: an unassigned bug there is
-    not a bug that has been overlooked.
+    Exempt bugs are left out: an unassigned bug there is not a bug that has been
+    overlooked. See unassigned_exempt().
     """
     return (
         bug["severity"] in HIGH_SEVERITIES
-        and bug["product"] not in UNASSIGNED_EXEMPT_PRODUCTS
+        and not unassigned_exempt(bug)
         and bug["assigned_to"] == NOBODY
         and parse_timestamp(bug["creation_time"]) < cutoff
     )
