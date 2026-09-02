@@ -14,8 +14,13 @@ $requested_date = Utils::getDate();
 $previous_date  = date('Ymd', strtotime($requested_date . ' -1 day'));
 $next_date      = date('Ymd', strtotime($requested_date . ' +1 day'));
 
-// We may have to display a warning message because an external resource is down
-$warning = '';
+/*
+    We may have to display a warning message because an external resource is
+    down or throttling us (Bugzilla and Socorro both answer 406/429 from time
+    to time). We collect messages here and expose them as a single string, the
+    page must always render with whatever data we managed to gather.
+ */
+$warnings = [];
 
 // Get nightlies for the GET Request (or today's nightly)
 $nightlies = include MODELS . 'api/nightly.php';
@@ -68,6 +73,13 @@ if (empty($nightlies_day_before)) {
     }
 }
 
+// Buildhub gave us nothing for the previous days, we can't build changelogs
+$last_build_before = empty($nightlies_day_before) ? [] : end($nightlies_day_before);
+
+if ($last_build_before === []) {
+    $warnings[] = 'Buildhub is not providing the previous builds, changelogs are unavailable';
+}
+
 // Associate nightly with nightly-1
 $nightly_pairs = [];
 
@@ -81,8 +93,8 @@ foreach ($nightlies as $buildid => $changeset) {
             'buildid'        => $buildid,
             'changeset'      => $changeset['revision'],
             'version'        => $changeset['version'],
-            'prev_version'   => end($nightlies_day_before)['version'],
-            'prev_changeset' => end($nightlies_day_before)['revision'],
+            'prev_version'   => $last_build_before['version'] ?? $changeset['version'],
+            'prev_changeset' => $last_build_before['revision'] ?? null,
         ];
         $i = false;
         $previous_version   = $changeset['version'];
@@ -107,19 +119,16 @@ $top_sigs = [];
 $days_elapsed = date_diff(date_create(date($today)), date_create($requested_date))->days;
 if ($days_elapsed < 10) {
     foreach ($nightly_pairs as $dataset) {
-        $build_crashes[$dataset['buildid']] = Utils::getCrashesForBuildID($dataset['buildid'])['total'] ?? null;
-        if (is_null($build_crashes[$dataset['buildid']])) {
-            $warning = "Socorro is not providing data";
-            continue;
-        }
-    }
+        $crashes = Utils::getCrashesForBuildID($dataset['buildid']);
 
-    foreach ($nightly_pairs as $dataset) {
-        $sig = Utils::getCrashesForBuildID($dataset['buildid'])['facets']['signature'] ?? null;
-        if (is_null($sig)) {
-            $warning = "Socorro is not providing data";
+        $build_crashes[$dataset['buildid']] = $crashes['total'] ?? null;
+        $sig = $crashes['facets']['signature'] ?? null;
+
+        if (is_null($build_crashes[$dataset['buildid']]) || ! is_array($sig)) {
+            $warnings[] = 'Socorro is not providing crash data';
             continue;
         }
+
         $top_sigs[$dataset['buildid']] = array_splice($sig, 0, 20);
     }
 }
@@ -129,6 +138,18 @@ $bug_list = [];
 $bug_list_karma = [];
 $bug_list_karma_details = [];
 foreach ($nightly_pairs as $dataset) {
+    $empty_bug_list = [
+        'bugs'  => null,
+        'url'   => '',
+        'count' => 0,
+    ];
+
+    // We don't know the previous changeset, we can't query the push log
+    if ($dataset['prev_changeset'] === null) {
+        $bug_list[$dataset['buildid']] = $empty_bug_list;
+        continue;
+    }
+
     $bugs = Bugzilla::getBugsFromHgWeb(
         URL::Mercurial->value
         . 'mozilla-central/json-pushes?fromchange='
@@ -138,6 +159,10 @@ foreach ($nightly_pairs as $dataset) {
         . '&full&version=2'
     );
 
+    if ($bugs['no_data'] === true) {
+        $warnings[] = 'hg.mozilla.org is not providing push data';
+    }
+
     $files = $bugs['files'] + $files;
     $bugs = $bugs['total'];
 
@@ -145,11 +170,7 @@ foreach ($nightly_pairs as $dataset) {
 
     // There were no bugs in the build, it is the same as the previous one
     if (empty($bugs)) {
-        $bug_list[$dataset['buildid']] = [
-            'bugs'  => null,
-            'url'   => '',
-            'count' => 0,
-        ];
+        $bug_list[$dataset['buildid']] = $empty_bug_list;
         continue;
     }
 
@@ -158,10 +179,25 @@ foreach ($nightly_pairs as $dataset) {
     // Bugzilla REST API https://wiki.mozilla.org/Bugzilla:REST_API
     $bug_list_details = Json::load(URL::Bugzilla->value . 'rest/bug?include_fields=id,summary,priority,severity,keywords,product,component,type,duplicates,regressions,cf_webcompat_priority,cf_performance_impact,cf_tracking_firefox' . NIGHTLY . ',cf_tracking_firefox' . BETA . ',cf_tracking_firefox' . RELEASE . ',cf_status_firefox' . NIGHTLY . ',cf_status_firefox' . BETA . ',cf_status_firefox' . RELEASE . ',cc,see_also&bug_id=' . implode('%2C', $bugs));
 
+    /*
+        Bugzilla throttles us (429) or rejects the request (406) from time to
+        time. In that case Json::load() returns an ['error' => …] array: we keep
+        the build in the list with its push log link but without bug details.
+     */
+    if (! isset($bug_list_details['bugs']) || ! is_array($bug_list_details['bugs'])) {
+        $warnings[] = 'Bugzilla is not providing bug details';
+        $bug_list[$dataset['buildid']] = [
+            'bugs'  => null,
+            'url'   => $url,
+            'count' => count($bugs),
+        ];
+        continue;
+    }
+
     $bug_list[$dataset['buildid']] = [
         'bugs'  => $bug_list_details['bugs'],
         'url'   => $url,
-        'count' => is_countable($bugs) ? count($bugs) : 0,
+        'count' => count($bugs),
     ];
 
     $bug_list_karma_details = [...$bug_list_details['bugs'], ...$bug_list_karma_details];
@@ -216,7 +252,7 @@ $top_sigs_worth_a_bug = array_map('urlencode', $top_sigs_worth_a_bug);
 $crash_bugs = [];
 if (! empty($top_sigs_worth_a_bug)) {
     foreach ($top_sigs_worth_a_bug as $sig) {
-        $bugs_for_top_sigs = Utils::getBugsforCrashSignature($sig, 30)['hits']; // short 30s cache intended
+        $bugs_for_top_sigs = Utils::getBugsforCrashSignature($sig, 30)['hits'] ?? []; // short 30s cache intended
         $tmp = array_column($bugs_for_top_sigs, 'id');
         if (!empty($tmp)) {
             $crash_bugs[urldecode($sig)] = max(
@@ -239,6 +275,11 @@ foreach ($bug_list as $key => $values) {
     }
 
     foreach ($values['bugs'] as $bug_details) {
+        // Truncated Bugzilla response, we can't do anything with this record
+        if (! isset($bug_details['id'])) {
+            continue;
+        }
+
         // Touches a feature flag file
         $file_match = false;
         $key_files = [
@@ -249,7 +290,8 @@ foreach ($bug_list as $key => $values) {
             'mobile/android/app/geckoview-prefs.js',
             'widget/windows/GfxInfo.cpp',
         ];
-        foreach ($files[$bug_details['id']] as $file) {
+        // hg.mozilla.org may not have given us the file list for that bug
+        foreach ($files[$bug_details['id']] ?? [] as $file) {
             if (in_array($file, $key_files)) {
                 $file_match = true;
                 break;
@@ -271,13 +313,13 @@ foreach ($bug_list as $key => $values) {
         }
 
         // Enhancements are potential release notes additions
-        if ($bug_details['type'] == 'enhancement') {
+        if (($bug_details['type'] ?? '') == 'enhancement') {
             $outstanding_bugs[$key]['bugs'][] = $bug_details;
             continue;
         }
 
         // High karma
-        if ($bug_list_karma[$bug_details['id']]['score'] > 15) {
+        if (($bug_list_karma[$bug_details['id']]['score'] ?? 0) > 15) {
             $outstanding_bugs[$key]['bugs'][] = $bug_details;
             continue;
         }
@@ -285,6 +327,9 @@ foreach ($bug_list as $key => $values) {
 }
 
 $bug_changed_pref = array_unique($bug_changed_pref);
+
+// A single message for all the external resources that let us down
+$warning = implode('. ', array_unique($warnings));
 
 if (! empty($nightlies)) {
     Request::waitingPage('hide');

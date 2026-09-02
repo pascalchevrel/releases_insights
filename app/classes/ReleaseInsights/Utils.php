@@ -7,6 +7,7 @@ namespace ReleaseInsights;
 use Cache\Cache;
 use DateTime;
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\GuzzleException;
 use Uri\Rfc3986\Uri;
 
 class Utils
@@ -56,7 +57,9 @@ class Utils
         // If we can't retrieve cached data, we create and cache it.
         // We cache because we want to avoid http request latency
         if (! $data = Cache::getKey($cache_id, $ttl)) {
-            $data = file_get_contents($cache_id);
+            // getFile() swallows HTTP errors (Socorro throttles us with 429s and
+            // sometimes answers 406) and returns an empty string in that case.
+            $data = self::getFile($cache_id);
 
             // Error fetching data, don't cache.
             // @codeCoverageIgnoreStart
@@ -66,7 +69,7 @@ class Utils
             // @codeCoverageIgnoreEnd
 
             // No data returned, bug or incorrect date, don't cache.
-            if (empty($data)) {
+            if (empty($data) || ! json_validate($data)) {
                 return [];
             }
             Cache::setKey($cache_id, $data);
@@ -195,16 +198,28 @@ class Utils
 
         // We know that some queries fail for hg.mozilla.org but we deal with that in templates
         // We ignore warnings for 404 errors as we don't want to spam Sentry
-        $response = $client->request('GET', $url, ['http_errors' => false]);
+        // A DNS/connection/timeout error is a Guzzle exception, not a status
+        // code, and must not take the whole page down either.
+        try {
+            $response = $client->request('GET', $url, [
+                'http_errors'     => false,
+                'connect_timeout' => 10,
+                'timeout'         => 30,
+            ]);
+            $status = $response->getStatusCode();
+        } catch (GuzzleException) {
+            $response = null;
+            $status = 0;
+        }
 
         // Request to Product-details failed (no answer from remote)
         // We prefer to die here because this data is essential to the whole app.
-        if ($response->getStatusCode() != 200 && str_contains($url, 'product-details.mozilla.org')) {
+        if ($status != 200 && str_contains($url, 'product-details.mozilla.org')) {
             die("Key external resource {$url} currently not available, please try reloading the page.");
         }
 
-        // Request failed, let's return an empty string for now
-        if ($response->getStatusCode() != 200) {
+        // Request failed (406, 429, timeout…), let's return an empty string for now
+        if ($status != 200) {
             return '';
         }
 
